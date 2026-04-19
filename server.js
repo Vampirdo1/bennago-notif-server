@@ -1,97 +1,87 @@
-// server.js — Backend BennaGO pour notifications FCM v1
+// server.js — Backend BennaGO (Render.com)
 const express = require("express");
 const admin   = require("firebase-admin");
 const app     = express();
-
 app.use(express.json());
 
-// ── Init Firebase Admin ───────────────────────────────────────────────────────
+// ── Firebase ──────────────────────────────────────────────────────────────────
 try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_KEY);
-    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    admin.initializeApp({
+        credential: admin.credential.cert(
+            JSON.parse(process.env.FIREBASE_SERVICE_KEY))
+    });
     console.log("✅ Firebase Admin initialisé");
-} catch (e) {
-    console.error("❌ Erreur init Firebase :", e.message);
-    process.exit(1);
-}
+} catch (e) { console.error("❌ Firebase:", e.message); process.exit(1); }
 
 const messaging = admin.messaging();
 
-// ── GET / (santé) ─────────────────────────────────────────────────────────────
-app.get("/", (req, res) => {
-    res.json({ status: "BennaGO Server ✅", time: new Date().toISOString() });
-});
+// ── Stripe ────────────────────────────────────────────────────────────────────
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
+app.get("/",     (req, res) => res.json({ status: "BennaGO Server ✅" }));
 app.get("/ping", (req, res) => res.json({ pong: true }));
 
-// ── POST /notify/admin ────────────────────────────────────────────────────────
-app.post("/notify/admin", async (req, res) => {
-    console.log("📥 /notify/admin :", JSON.stringify(req.body));
-    const { orderId, clientName, total } = req.body;
-
-    if (!orderId || !clientName || total === undefined)
-        return res.status(400).json({ error: "Champs manquants" });
-
+// ── PaymentIntent Stripe ──────────────────────────────────────────────────────
+app.post("/stripe/create-payment-intent", async (req, res) => {
+    const { amount } = req.body; // en millimes
+    console.log("💳 PaymentIntent — amount:", amount);
+    if (!amount || amount <= 0)
+        return res.status(400).json({ error: "Montant invalide" });
     try {
-        const msgId = await messaging.send({
-            topic: "admin",
-            notification: {
-                title: "🍽️ Nouvelle commande !",
-                body:  `${clientName} — ${parseFloat(total).toFixed(3)} TND`,
-            },
-            data: {
-                type: "new_order", orderId: String(orderId),
-                title: "🍽️ Nouvelle commande !",
-                body:  `${clientName} — ${parseFloat(total).toFixed(3)} TND`,
-            },
-            android: {
-                priority: "high",
-                notification: { sound: "default", channelId: "channel_orders" },
-            },
+        const pi = await stripe.paymentIntents.create({
+            amount:   Math.round(amount),
+            currency: "tnd",
+            automatic_payment_methods: { enabled: true },
         });
-        console.log("✅ Admin notifié :", msgId);
-        res.json({ success: true, messageId: msgId });
-    } catch (err) {
-        console.error("❌ Erreur FCM admin :", err.code, err.message);
-        res.status(500).json({ error: err.message, code: err.code });
+        console.log("✅ PaymentIntent:", pi.id);
+        res.json({ clientSecret: pi.client_secret });
+    } catch (e) {
+        console.error("❌ Stripe:", e.message);
+        res.status(500).json({ error: e.message });
     }
 });
 
-// ── POST /notify/client ───────────────────────────────────────────────────────
-app.post("/notify/client", async (req, res) => {
-    console.log("📥 /notify/client :", JSON.stringify(req.body));
-    const { clientToken, orderId, newStatus } = req.body;
+// ── Notif admin ───────────────────────────────────────────────────────────────
+app.post("/notify/admin", async (req, res) => {
+    const { orderId, clientName, total } = req.body;
+    if (!orderId || !clientName || total === undefined)
+        return res.status(400).json({ error: "Champs manquants" });
+    try {
+        const id = await messaging.send({
+            topic: "admin",
+            notification: { title: "🍽️ Nouvelle commande !",
+                body: `${clientName} — ${parseFloat(total).toFixed(3)} TND` },
+            data: { type: "new_order", orderId: String(orderId),
+                title: "🍽️ Nouvelle commande !",
+                body: `${clientName} — ${parseFloat(total).toFixed(3)} TND` },
+            android: { priority: "high",
+                notification: { channelId: "channel_orders" } },
+        });
+        res.json({ success: true, messageId: id });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
+// ── Notif client ──────────────────────────────────────────────────────────────
+app.post("/notify/client", async (req, res) => {
+    const { clientToken, orderId, newStatus } = req.body;
     if (!clientToken || !orderId || !newStatus)
         return res.status(400).json({ error: "Champs manquants" });
-
-    const icons = { "Confirmée":"✅","En livraison":"🚚","Livrée":"🎉","Annulée":"❌" };
+    const icons = {"Confirmée":"✅","En livraison":"🚚","Livrée":"🎉","Annulée":"❌"};
     const icon  = icons[newStatus] || "⏳";
-
     try {
-        const msgId = await messaging.send({
+        const id = await messaging.send({
             token: clientToken,
-            notification: {
-                title: `${icon} Commande #${orderId}`,
-                body:  `Votre commande est maintenant : ${newStatus}`,
-            },
-            data: {
-                type: "status_changed", orderId: String(orderId), newStatus,
-                title: `${icon} Commande #${orderId}`,
-                body:  `Votre commande est maintenant : ${newStatus}`,
-            },
-            android: {
-                priority: "high",
-                notification: { sound: "default", channelId: "channel_status" },
-            },
+            notification: { title: `${icon} Commande #${orderId}`,
+                body: `Votre commande est maintenant : ${newStatus}` },
+            data: { type: "status_changed", orderId: String(orderId),
+                newStatus, title: `${icon} Commande #${orderId}`,
+                body: `Votre commande est maintenant : ${newStatus}` },
+            android: { priority: "high",
+                notification: { channelId: "channel_status" } },
         });
-        console.log(`✅ Client notifié — commande #${orderId} → ${newStatus} :`, msgId);
-        res.json({ success: true, messageId: msgId });
-    } catch (err) {
-        console.error("❌ Erreur FCM client :", err.code, err.message);
-        res.status(500).json({ error: err.message, code: err.code });
-    }
+        res.json({ success: true, messageId: id });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Serveur lancé sur port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur sur port ${PORT}`));
