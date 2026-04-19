@@ -1,13 +1,11 @@
 {
-  "name": "bennago-notification-server",
+  "name": "bennago-server",
   "version": "1.0.0",
-  "description": "Serveur de notifications FCM v1 pour BennaGO",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
   "dependencies": {
-    "express": "^4.18.2",
-    "firebase-admin": "^11.11.0"
+    "express":        "^4.18.2",
+    "firebase-admin": "^11.11.0",
+    "stripe":         "^14.25.0"
   }
 }
