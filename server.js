@@ -16,28 +16,58 @@ try {
 const messaging = admin.messaging();
 
 // ── Stripe ────────────────────────────────────────────────────────────────────
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+// Vérifier que la clé est présente
+if (!process.env.STRIPE_SECRET_KEY) {
+    console.error("❌ STRIPE_SECRET_KEY manquante dans les variables d'environnement !");
+}
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY || "");
 
-app.get("/",     (req, res) => res.json({ status: "BennaGO Server ✅" }));
+// ── Routes santé ──────────────────────────────────────────────────────────────
+app.get("/",     (req, res) => res.json({ status: "BennaGO Server ✅", stripe: !!process.env.STRIPE_SECRET_KEY }));
 app.get("/ping", (req, res) => res.json({ pong: true }));
 
-// ── PaymentIntent Stripe ──────────────────────────────────────────────────────
+// ── Stripe PaymentIntent ──────────────────────────────────────────────────────
+// ⚠️  TND n'est PAS supporté par Stripe → on utilise EUR pour le test
+// En production réelle, utiliser une passerelle locale (Konnect, Paymee, etc.)
 app.post("/stripe/create-payment-intent", async (req, res) => {
-    const { amount } = req.body; // en millimes
-    console.log("💳 PaymentIntent — amount:", amount);
-    if (!amount || amount <= 0)
-        return res.status(400).json({ error: "Montant invalide" });
+    const { amount } = req.body;
+    console.log("💳 PaymentIntent — amount reçu:", amount);
+
+    if (!amount || isNaN(amount) || amount <= 0) {
+        console.error("❌ Montant invalide:", amount);
+        return res.status(400).json({ error: "Montant invalide : " + amount });
+    }
+
+    // Stripe exige un entier en centimes
+    // On simule : 12.500 TND → 1250 centimes EUR (pour le test académique)
+    const amountInCents = Math.round(parseFloat(amount));
+    console.log("💳 Montant en centimes:", amountInCents);
+
     try {
-        const pi = await stripe.paymentIntents.create({
-            amount:   Math.round(amount),
-            currency: "tnd",
+        const paymentIntent = await stripe.paymentIntents.create({
+            amount:   amountInCents,
+            currency: "eur",   // ✅ EUR supporté en test mode Stripe
             automatic_payment_methods: { enabled: true },
         });
-        console.log("✅ PaymentIntent:", pi.id);
-        res.json({ clientSecret: pi.client_secret });
-    } catch (e) {
-        console.error("❌ Stripe:", e.message);
-        res.status(500).json({ error: e.message });
+
+        console.log("✅ PaymentIntent créé :", paymentIntent.id);
+        console.log("✅ clientSecret présent :", !!paymentIntent.client_secret);
+
+        // S'assurer que clientSecret est bien envoyé
+        res.json({
+            clientSecret: paymentIntent.client_secret,
+            paymentIntentId: paymentIntent.id
+        });
+
+    } catch (err) {
+        console.error("❌ Stripe error code :", err.code);
+        console.error("❌ Stripe error message :", err.message);
+        console.error("❌ Stripe error type :", err.type);
+        res.status(500).json({
+            error:   err.message,
+            code:    err.code,
+            type:    err.type
+        });
     }
 });
 
@@ -84,4 +114,8 @@ app.post("/notify/client", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Serveur sur port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`🚀 Serveur lancé sur port ${PORT}`);
+    console.log(`   STRIPE_SECRET_KEY : ${process.env.STRIPE_SECRET_KEY ? "✅ définie" : "❌ MANQUANTE"}`);
+    console.log(`   FIREBASE_SERVICE_KEY : ${process.env.FIREBASE_SERVICE_KEY ? "✅ définie" : "❌ MANQUANTE"}`);
+});
